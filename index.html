@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Камера</title>
+<style>
+:root{--bg:#101214;--fg:#eef0f2;--mute:#8b929a;--ring:#f2f2f2;--accent:#ff4d3d;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:light){:root:not([data-theme="dark"]){--bg:#101214}}
+*,*:before,*:after{box-sizing:inherit}
+html,body{height:100%;margin:0;background:var(--bg);color:var(--fg);font-family:"Trebuchet MS","Segoe UI",system-ui,sans-serif}
+body{display:flex;flex-direction:column}
+.stage{position:relative;flex:1;min-height:0;margin:10px 10px 0;border-radius:22px;overflow:hidden;background:#000}
+video{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none}
+#out{width:100%;height:100%;object-fit:cover;display:block;background:#000}
+.fx{position:absolute;top:12px;left:12px;z-index:2;padding:9px 16px;border-radius:999px;background:rgba(16,18,20,.6);backdrop-filter:blur(8px);font-size:.9rem}
+.fx[aria-pressed="true"]{background:var(--accent)}
+.msg{z-index:3;background:rgba(0,0,0,.55)}
+.flash{position:absolute;inset:0;background:#fff;opacity:0;pointer-events:none}
+.flash.on{animation:fl .25s ease-out}
+@keyframes fl{from{opacity:.9}to{opacity:0}}
+.msg{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:28px;text-align:center;line-height:1.4}
+.msg p{margin:0;max-width:30ch;color:var(--mute)}
+.msg h1{margin:0;font-size:1.5rem;font-weight:600}
+button{font:inherit;color:inherit;border:0;background:none;cursor:pointer}
+button:focus-visible{outline:3px solid var(--accent);outline-offset:3px}
+.start{background:var(--fg);color:#101214;padding:14px 26px;border-radius:999px;font-weight:600}
+.bar{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;padding:14px 22px 18px}
+.shutter{width:76px;height:76px;border-radius:50%;border:4px solid var(--ring);padding:5px;justify-self:center}
+.shutter span{display:block;width:100%;height:100%;border-radius:50%;background:var(--ring);transition:transform .12s}
+.shutter:active span{transform:scale(.86);background:var(--accent)}
+.thumb{justify-self:start;width:52px;height:52px;border-radius:12px;background:#22262a center/cover;border:2px solid #2d3238}
+.flip{justify-self:end;width:52px;height:52px;border-radius:50%;background:#22262a;display:grid;place-items:center}
+.flip svg{width:24px;height:24px;stroke:var(--fg);fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.gallery{position:fixed;inset:0;background:rgba(10,11,12,.96);display:none;flex-direction:column;padding:calc(14px + env(safe-area-inset-top,0px)) 14px 14px;z-index:5}
+.gallery.open{display:flex}
+.gallery header{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}
+.grid{flex:1;overflow:auto;display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:8px;align-content:start}
+.grid a{display:block;aspect-ratio:3/4;border-radius:12px;overflow:hidden;background:#22262a}
+.grid img{width:100%;height:100%;object-fit:cover;display:block}
+.hint{color:var(--mute);font-size:.85rem;margin:8px 0 0}
+.close{padding:8px 14px;border-radius:999px;background:#22262a}
+@media (prefers-reduced-motion:reduce){.flash.on{animation:none}}
+</style>
+</head>
+<body>
+<div class="stage" id="stage">
+  <video id="v" playsinline muted autoplay></video>
+  <canvas id="out"></canvas>
+  <button class="fx" id="fx" aria-pressed="true">Стекло: вкл</button>
+  <div class="flash" id="flash"></div>
+  <div class="msg" id="msg">
+    <h1>Камера</h1>
+    <p>Нажми кнопку и разреши доступ к камере. Видео не уходит с твоего устройства.</p>
+    <button class="start" id="start">Включить камеру</button>
+  </div>
+</div>
+<div class="bar">
+  <button class="thumb" id="thumb" aria-label="Открыть снимки"></button>
+  <button class="shutter" id="shot" aria-label="Сделать снимок"><span></span></button>
+  <button class="flip" id="flip" aria-label="Переключить камеру">
+    <svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M3 21v-5h5"/></svg>
+  </button>
+</div>
+<div class="gallery" id="gal">
+  <header><strong>Снимки</strong><button class="close" id="close">Закрыть</button></header>
+  <div class="grid" id="grid"></div>
+  <p class="hint">Нажми на снимок, чтобы открыть его и сохранить. Снимки хранятся только пока страница открыта.</p>
+</div>
+<script>
+const v=document.getElementById('v'),msg=document.getElementById('msg'),flash=document.getElementById('flash'),
+thumb=document.getElementById('thumb'),gal=document.getElementById('gal'),grid=document.getElementById('grid');
+let stream=null,facing='environment',shots=[];
+
+async function open(){
+  if(stream)stream.getTracks().forEach(t=>t.stop());
+  try{
+    stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:facing},width:{ideal:1920},height:{ideal:1080}},audio:false});
+    v.srcObject=stream;await v.play();
+    msg.style.display='none';
+  }catch(e){
+    msg.style.display='flex';
+    msg.innerHTML='<h1>Нет доступа к камере</h1><p>Разреши камеру в настройках браузера для этой страницы и попробуй ещё раз. Если страница открыта внутри другого приложения, открой её в обычном браузере.</p><button class="start" id="retry">Попробовать снова</button>';
+    document.getElementById('retry').onclick=open;
+  }
+}
+document.getElementById('start').onclick=open;
+document.getElementById('flip').onclick=()=>{facing=facing==='user'?'environment':'user';if(stream)open();};
+
+document.getElementById('shot').onclick=()=>{
+  if(!stream||!out.width)return;
+  const url=out.toDataURL('image/jpeg',.92);
+  shots.unshift(url);
+  thumb.style.backgroundImage='url('+url+')';
+  flash.classList.remove('on');void flash.offsetWidth;flash.classList.add('on');
+  if(navigator.vibrate)try{navigator.vibrate(20)}catch(e){}
+};
+
+const out=document.getElementById('out'),octx=out.getContext('2d',{willReadFrequently:true});
+const proc=document.createElement('canvas'),pctx=proc.getContext('2d');
+let fx=true;
+const fxBtn=document.getElementById('fx');
+fxBtn.onclick=()=>{fx=!fx;fxBtn.setAttribute('aria-pressed',fx);fxBtn.textContent='Стекло: '+(fx?'вкл':'выкл');};
+
+// палитра заката: тёмно-синий, синий, сирень, розовый, оранжевый, светлый
+const stops=[[0,[8,12,38]],[.28,[24,70,150]],[.5,[122,92,200]],[.68,[232,112,160]],[.84,[255,160,90]],[1,[255,240,215]]];
+const lut=new Uint8ClampedArray(768);
+for(let i=0;i<256;i++){
+  const t=i/255;let k=0;
+  while(k<stops.length-2&&t>stops[k+1][0])k++;
+  const a=stops[k],b=stops[k+1],u=Math.min(1,Math.max(0,(t-a[0])/(b[0]-a[0])));
+  for(let c=0;c<3;c++)lut[i*3+c]=a[1][c]+(b[1][c]-a[1][c])*u;
+}
+
+function ribbons(W,H,t){
+  const vx=W*(.5+.1*Math.sin(t/3500)),vy=H*.62;
+  for(let k=0;k<5;k++){
+    const sway=Math.sin(t/2600+k*1.7)*W*.04;
+    const xa=W*(k*.27-.12)+sway,xb=xa+W*(.2+.07*(k%2));
+    const ex=vx+(k-2)*W*.045,ey=vy+(k%2)*H*.03;
+    const path=new Path2D();
+    path.moveTo(xa,-6);
+    path.quadraticCurveTo(xa+(vx-xa)*.6,vy*.98,ex,ey);
+    path.lineTo(ex+W*.05,ey+H*.012);
+    path.quadraticCurveTo(xb+(vx-xb)*.6,vy*1.02,xb,-6);
+    path.closePath();
+    octx.save();
+    octx.clip(path);
+    // «преломление»: растянутая копия кадра внутри ленты
+    octx.globalAlpha=.5;
+    octx.translate(vx,vy);octx.rotate(.04*(k-2)+Math.sin(t/4000+k)*.02);octx.scale(1.6,1.6);octx.translate(-vx,-vy);
+    octx.drawImage(proc,0,0);
+    octx.setTransform(1,0,0,1,0,0);
+    octx.globalAlpha=1;
+    const g=octx.createLinearGradient(0,0,0,vy);
+    g.addColorStop(0,'rgba(18,70,150,.55)');g.addColorStop(1,'rgba(215,225,255,.28)');
+    octx.fillStyle=g;octx.fillRect(0,0,W,H);
+    octx.restore();
+    octx.lineWidth=1.6;octx.strokeStyle='rgba(235,245,255,.7)';octx.stroke(path);
+  }
+}
+
+function frame(t){
+  requestAnimationFrame(frame);
+  if(!stream||!v.videoWidth)return;
+  const vw=v.videoWidth,vh=v.videoHeight,s=640/Math.max(vw,vh),W=Math.round(vw*s),H=Math.round(vh*s);
+  if(out.width!==W||out.height!==H){out.width=proc.width=W;out.height=proc.height=H;}
+  octx.setTransform(1,0,0,1,0,0);
+  if(facing==='user'){octx.translate(W,0);octx.scale(-1,1);}
+  octx.drawImage(v,0,0,W,H);
+  octx.setTransform(1,0,0,1,0,0);
+  if(!fx)return;
+  const img=octx.getImageData(0,0,W,H),d=img.data,n=W*H,lum=new Uint8Array(n),hist=new Uint32Array(256);
+  for(let i=0,j=0;i<n;i++,j+=4){const l=(d[j]*.3+d[j+1]*.59+d[j+2]*.11)|0;lum[i]=l;hist[l]++;}
+  let lo=0,hi=255,acc=0;
+  while(lo<254&&(acc+=hist[lo])<n*.04)lo++;
+  acc=0;while(hi>lo+8&&(acc+=hist[hi])<n*.04)hi--;
+  const rng=Math.max(16,hi-lo);
+  for(let y=1;y<H-1;y++){
+    for(let x=1;x<W-1;x++){
+      const i=y*W+x,j=i*4;
+      const gx=-lum[i-W-1]-2*lum[i-1]-lum[i+W-1]+lum[i-W+1]+2*lum[i+1]+lum[i+W+1];
+      const gy=-lum[i-W-1]-2*lum[i-W]-lum[i-W+1]+lum[i+W-1]+2*lum[i+W]+lum[i+W+1];
+      const e=Math.min(1,Math.max(0,((Math.abs(gx)+Math.abs(gy))*.5-45)/150));
+      let l=((lum[i]-lo)/rng)*255;l=l<0?0:l>255?255:l|0;
+      const r=lut[l*3]*.8+d[j]*.2,g=lut[l*3+1]*.8+d[j+1]*.2,b=lut[l*3+2]*.8+d[j+2]*.2;
+      d[j]=Math.min(255,r+255*e*.9);d[j+1]=Math.min(255,g+190*e*.9);d[j+2]=Math.min(255,b+70*e*.9);
+    }
+  }
+  pctx.putImageData(img,0,0);
+  octx.drawImage(proc,0,0);
+  ribbons(W,H,t);
+  const vg=octx.createLinearGradient(0,H*.68,0,H);
+  vg.addColorStop(0,'rgba(4,8,14,0)');vg.addColorStop(1,'rgba(4,8,14,.6)');
+  octx.fillStyle=vg;octx.fillRect(0,0,W,H);
+}
+requestAnimationFrame(frame);
+
+function render(){
+  grid.innerHTML='';
+  shots.forEach((u,i)=>{
+    const a=document.createElement('a');a.href=u;a.download='foto-'+(shots.length-i)+'.jpg';
+    const im=new Image();im.src=u;a.appendChild(im);grid.appendChild(a);
+  });
+}
+thumb.onclick=()=>{render();gal.classList.add('open');};
+document.getElementById('close').onclick=()=>gal.classList.remove('open');
+</script>
+</body>
+</html>
