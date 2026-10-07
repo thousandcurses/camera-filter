@@ -47,7 +47,7 @@ button:focus-visible{outline:3px solid var(--accent);outline-offset:3px}
 <div class="stage" id="stage">
   <video id="v" playsinline muted autoplay></video>
   <canvas id="out"></canvas>
-  <button class="fx" id="fx" aria-pressed="true">Стекло: вкл</button>
+  <button class="fx" id="fx" aria-pressed="true">Эффект: вкл</button>
   <div class="flash" id="flash"></div>
   <div class="msg" id="msg">
     <h1>Камера</h1>
@@ -97,82 +97,104 @@ document.getElementById('shot').onclick=()=>{
 };
 
 const out=document.getElementById('out'),octx=out.getContext('2d',{willReadFrequently:true});
-const proc=document.createElement('canvas'),pctx=proc.getContext('2d');
 let fx=true;
 const fxBtn=document.getElementById('fx');
-fxBtn.onclick=()=>{fx=!fx;fxBtn.setAttribute('aria-pressed',fx);fxBtn.textContent='Стекло: '+(fx?'вкл':'выкл');};
+fxBtn.onclick=()=>{fx=!fx;fxBtn.setAttribute('aria-pressed',fx);fxBtn.textContent='Эффект: '+(fx?'вкл':'выкл');};
 
-// палитра заката: тёмно-синий, синий, сирень, розовый, оранжевый, светлый
-const stops=[[0,[8,12,38]],[.28,[24,70,150]],[.5,[122,92,200]],[.68,[232,112,160]],[.84,[255,160,90]],[1,[255,240,215]]];
-const lut=new Uint8ClampedArray(768);
-for(let i=0;i<256;i++){
-  const t=i/255;let k=0;
-  while(k<stops.length-2&&t>stops[k+1][0])k++;
-  const a=stops[k],b=stops[k+1],u=Math.min(1,Math.max(0,(t-a[0])/(b[0]-a[0])));
-  for(let c=0;c<3;c++)lut[i*3+c]=a[1][c]+(b[1][c]-a[1][c])*u;
+// Эффект: замкнутые области, ограниченные тёмными линиями (промежутки в проводах, оконные рамки),
+// искажаются как стекло. Всё остальное остаётся обычным кадром.
+let lw=0,lh=0,lum,dark,dk2,lab,alphaM,integ,stk,srcBuf;
+function setup(W,H){
+  lw=W>>1;lh=H>>1;const n=lw*lh;
+  lum=new Uint8Array(n);dark=new Uint8Array(n);dk2=new Uint8Array(n);
+  lab=new Int32Array(n);alphaM=new Float32Array(n);stk=new Int32Array(n);
+  integ=new Uint32Array((lw+1)*(lh+1));srcBuf=new Uint8ClampedArray(W*H*4);
 }
-
-function ribbons(W,H,t){
-  const vx=W*(.5+.1*Math.sin(t/3500)),vy=H*.62;
-  for(let k=0;k<5;k++){
-    const sway=Math.sin(t/2600+k*1.7)*W*.04;
-    const xa=W*(k*.27-.12)+sway,xb=xa+W*(.2+.07*(k%2));
-    const ex=vx+(k-2)*W*.045,ey=vy+(k%2)*H*.03;
-    const path=new Path2D();
-    path.moveTo(xa,-6);
-    path.quadraticCurveTo(xa+(vx-xa)*.6,vy*.98,ex,ey);
-    path.lineTo(ex+W*.05,ey+H*.012);
-    path.quadraticCurveTo(xb+(vx-xb)*.6,vy*1.02,xb,-6);
-    path.closePath();
-    octx.save();
-    octx.clip(path);
-    // «преломление»: растянутая копия кадра внутри ленты
-    octx.globalAlpha=.5;
-    octx.translate(vx,vy);octx.rotate(.04*(k-2)+Math.sin(t/4000+k)*.02);octx.scale(1.6,1.6);octx.translate(-vx,-vy);
-    octx.drawImage(proc,0,0);
-    octx.setTransform(1,0,0,1,0,0);
-    octx.globalAlpha=1;
-    const g=octx.createLinearGradient(0,0,0,vy);
-    g.addColorStop(0,'rgba(18,70,150,.55)');g.addColorStop(1,'rgba(215,225,255,.28)');
-    octx.fillStyle=g;octx.fillRect(0,0,W,H);
-    octx.restore();
-    octx.lineWidth=1.6;octx.strokeStyle='rgba(235,245,255,.7)';octx.stroke(path);
-  }
-}
-
 function frame(t){
   requestAnimationFrame(frame);
   if(!stream||!v.videoWidth)return;
   const vw=v.videoWidth,vh=v.videoHeight,s=640/Math.max(vw,vh),W=Math.round(vw*s),H=Math.round(vh*s);
-  if(out.width!==W||out.height!==H){out.width=proc.width=W;out.height=proc.height=H;}
+  if(out.width!==W||out.height!==H){out.width=W;out.height=H;setup(W,H);}
   octx.setTransform(1,0,0,1,0,0);
   if(facing==='user'){octx.translate(W,0);octx.scale(-1,1);}
   octx.drawImage(v,0,0,W,H);
   octx.setTransform(1,0,0,1,0,0);
   if(!fx)return;
-  const img=octx.getImageData(0,0,W,H),d=img.data,n=W*H,lum=new Uint8Array(n),hist=new Uint32Array(256);
-  for(let i=0,j=0;i<n;i++,j+=4){const l=(d[j]*.3+d[j+1]*.59+d[j+2]*.11)|0;lum[i]=l;hist[l]++;}
-  let lo=0,hi=255,acc=0;
-  while(lo<254&&(acc+=hist[lo])<n*.04)lo++;
-  acc=0;while(hi>lo+8&&(acc+=hist[hi])<n*.04)hi--;
-  const rng=Math.max(16,hi-lo);
-  for(let y=1;y<H-1;y++){
-    for(let x=1;x<W-1;x++){
-      const i=y*W+x,j=i*4;
-      const gx=-lum[i-W-1]-2*lum[i-1]-lum[i+W-1]+lum[i-W+1]+2*lum[i+1]+lum[i+W+1];
-      const gy=-lum[i-W-1]-2*lum[i-W]-lum[i-W+1]+lum[i+W-1]+2*lum[i+W]+lum[i+W+1];
-      const e=Math.min(1,Math.max(0,((Math.abs(gx)+Math.abs(gy))*.5-45)/150));
-      let l=((lum[i]-lo)/rng)*255;l=l<0?0:l>255?255:l|0;
-      const r=lut[l*3]*.8+d[j]*.2,g=lut[l*3+1]*.8+d[j+1]*.2,b=lut[l*3+2]*.8+d[j+2]*.2;
-      d[j]=Math.min(255,r+255*e*.9);d[j+1]=Math.min(255,g+190*e*.9);d[j+2]=Math.min(255,b+70*e*.9);
+  const img=octx.getImageData(0,0,W,H),d=img.data,n=lw*lh;
+  srcBuf.set(d);const src=srcBuf;
+  // яркость в половинном разрешении + интегральное изображение
+  const iw=lw+1;
+  for(let y=0;y<lh;y++){
+    let row=0;
+    for(let x=0;x<lw;x++){
+      const j=((y*2)*W+x*2)*4,l=(d[j]*.3+d[j+1]*.59+d[j+2]*.11)|0;
+      lum[y*lw+x]=l;row+=l;
+      integ[(y+1)*iw+x+1]=integ[y*iw+x+1]+row;
     }
   }
-  pctx.putImageData(img,0,0);
-  octx.drawImage(proc,0,0);
-  ribbons(W,H,t);
-  const vg=octx.createLinearGradient(0,H*.68,0,H);
-  vg.addColorStop(0,'rgba(4,8,14,0)');vg.addColorStop(1,'rgba(4,8,14,.6)');
-  octx.fillStyle=vg;octx.fillRect(0,0,W,H);
+  // тёмные линии: темнее локального среднего или просто очень тёмные
+  const R=5;
+  for(let y=0;y<lh;y++){
+    const y0=Math.max(0,y-R),y1=Math.min(lh,y+R+1);
+    for(let x=0;x<lw;x++){
+      const x0=Math.max(0,x-R),x1=Math.min(lw,x+R+1);
+      const sum=integ[y1*iw+x1]-integ[y0*iw+x1]-integ[y1*iw+x0]+integ[y0*iw+x0];
+      const mean=sum/((x1-x0)*(y1-y0)),l=lum[y*lw+x];
+      dark[y*lw+x]=(l<mean*.8-3||l<38)?1:0;
+    }
+  }
+  // расширяем линии на 1 пиксель, чтобы закрыть мелкие щели
+  for(let y=0;y<lh;y++)for(let x=0;x<lw;x++){
+    const i=y*lw+x;
+    dk2[i]=(dark[i]||(x>0&&dark[i-1])||(x<lw-1&&dark[i+1])||(y>0&&dark[i-lw])||(y<lh-1&&dark[i+lw]))?1:0;
+  }
+  // связные области
+  lab.fill(0);
+  const area=[0],sx=[0],sy=[0];let L=0;
+  for(let i0=0;i0<n;i0++){
+    if(dk2[i0]||lab[i0])continue;
+    L++;let sp=0,a=0,mx=0,my=0;stk[sp++]=i0;lab[i0]=L;
+    while(sp){
+      const i=stk[--sp],x=i%lw,y=(i-x)/lw;a++;mx+=x;my+=y;
+      if(x>0&&!dk2[i-1]&&!lab[i-1]){lab[i-1]=L;stk[sp++]=i-1;}
+      if(x<lw-1&&!dk2[i+1]&&!lab[i+1]){lab[i+1]=L;stk[sp++]=i+1;}
+      if(y>0&&!dk2[i-lw]&&!lab[i-lw]){lab[i-lw]=L;stk[sp++]=i-lw;}
+      if(y<lh-1&&!dk2[i+lw]&&!lab[i+lw]){lab[i+lw]=L;stk[sp++]=i+lw;}
+    }
+    area.push(a);sx.push(mx/a*2);sy.push(my/a*2);
+  }
+  const act=new Uint8Array(L+1);
+  for(let k=1;k<=L;k++)act[k]=(area[k]>n*.004&&area[k]<n*.3)?1:0;
+  // плавное появление/исчезновение
+  for(let i=0;i<n;i++){const target=lab[i]&&act[lab[i]]?1:0;alphaM[i]+=(target-alphaM[i])*.35;}
+  // искажение
+  for(let y=0;y<H;y++){
+    const ty=y/H,ly=y>>1;
+    for(let x=0;x<W;x++){
+      const i=ly*lw+(x>>1),a=alphaM[i];
+      if(a<.03)continue;
+      const l=lab[i];if(!l)continue;
+      const cx=sx[l]*1,cy=sy[l]*1,dx=x-cx,dy=y-cy;
+      const wob=Math.sin(t/700+dy*.045)*4;
+      const sh=dy*.3;
+      let o=(y*W+x)*4,rgb=[0,0,0];
+      const ks=[.5,.55,.6];
+      for(let c=0;c<3;c++){
+        const k=ks[c];
+        let u=cx+(dx+sh)*k+wob,w=cy+dy*k;
+        u=u<0?0:u>W-1?W-1:u|0;w=w<0?0:w>H-1?H-1:w|0;
+        rgb[c]=src[(w*W+u)*4+c];
+      }
+      // сине-розовый оттенок стекла
+      const r=rgb[0]*.62+(70+185*ty)*.38,g=rgb[1]*.62+(120+20*ty)*.38,b=rgb[2]*.62+(225-95*ty)*.38;
+      let rr=r,gg=g,bb=b;
+      // светлая кромка у линий
+      const edge=(i%lw>0&&!lab[i-1])||(i%lw<lw-1&&!lab[i+1])||(ly>0&&!lab[i-lw])||(ly<lh-1&&!lab[i+lw]);
+      if(edge){rr+=60;gg+=65;bb+=70;}
+      d[o]=src[o]*(1-a)+rr*a;d[o+1]=src[o+1]*(1-a)+gg*a;d[o+2]=src[o+2]*(1-a)+bb*a;
+    }
+  }
+  octx.putImageData(img,0,0);
 }
 requestAnimationFrame(frame);
 
